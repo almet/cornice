@@ -7,6 +7,7 @@ from cornice.tests.support import TestCase
 
 _validator = lambda req: True
 _validator2 = lambda req: True
+_stub = lambda req: None
 
 
 class TestService(TestCase):
@@ -173,7 +174,7 @@ class TestService(TestCase):
             service.add_view("GET", lambda x: "red", schema=schema)
             self.assertEquals(len(service.schemas_for("GET")), 1)
             service.add_view("GET", lambda x: "red", validators=_validator,
-                              schema=schema)
+                             schema=schema)
             self.assertEquals(len(service.schemas_for("GET")), 2)
 
     def test_class_parameters(self):
@@ -254,3 +255,95 @@ class TestService(TestCase):
         finally:
             Service.default_validators = old_validators
             Service.default_filters = old_filters
+
+    def test_cors_support(self):
+        self.assertFalse(
+            Service(name='foo', path='/foo').cors_support)
+
+        self.assertTrue(
+            Service(name='foo', path='/foo', cors_support=True)
+            .cors_support)
+
+        self.assertFalse(
+            Service(name='foo', path='/foo', cors_support=False)
+            .cors_support)
+
+        self.assertTrue(
+            Service(name='foo', path='/foo', cors_origins=('*'))
+            .cors_support)
+
+    def test_cors_headers_for_service_instanciation(self):
+        # When definining services, it's possible to add headers. This tests
+        # it is possible to list all the headers supported by a service.
+        service = Service('coconuts', '/migrate',
+                          cors_headers=('X-Header-Coconut'))
+        self.assertNotIn('X-Header-Coconut', service.cors_supported_headers)
+
+        service.add_view('post', _stub)
+        self.assertIn('X-Header-Coconut', service.cors_supported_headers)
+
+    def test_cors_headers_for_view_definition(self):
+        # defining headers in the view should work.
+        service = Service('coconuts', '/migrate')
+        service.add_view('post', _stub, cors_headers=('X-Header-Foobar'))
+        self.assertIn('X-Header-Foobar', service.cors_supported_headers)
+
+    def test_cors_headers_extension(self):
+        # definining headers in the service and in the view
+        service = Service('coconuts', '/migrate',
+                          cors_headers=('X-Header-Foobar'))
+        service.add_view('post', _stub, cors_headers=('X-Header-Barbaz'))
+        self.assertIn('X-Header-Foobar', service.cors_supported_headers)
+        self.assertIn('X-Header-Barbaz', service.cors_supported_headers)
+
+        # check that adding the same header twice doesn't make bad things
+        # happen
+        service.add_view('post', _stub, cors_headers=('X-Header-Foobar'),)
+        self.assertEquals(len(service.cors_supported_headers), 2)
+
+        # check that adding a header on a cors disabled method doesn't
+        # change anything
+        service.add_view('put', _stub,
+                         cors_headers=('X-Another-Header',),
+                         cors_support=False)
+
+        self.assertFalse('X-Another-Header' in service.cors_supported_headers)
+
+    def test_cors_supported_methods(self):
+        foo = Service(name='foo', path='/foo', cors_support=True)
+        foo.add_view('get', _stub)
+        self.assertIn('GET', foo.cors_supported_methods)
+
+        foo.add_view('post', _stub)
+        self.assertIn('POST', foo.cors_supported_methods)
+
+    def test_disabling_cors_for_one_method(self):
+        foo = Service(name='foo', path='/foo', cors_support=True)
+        foo.add_view('get', _stub)
+        self.assertIn('GET', foo.cors_supported_methods)
+
+        foo.add_view('post', _stub, cors_support=False)
+        self.assertIn('GET', foo.cors_supported_methods)
+        self.assertFalse('POST' in foo.cors_supported_methods)
+
+    def test_cors_supported_origins(self):
+        foo = Service(
+            name='foo', path='/foo', cors_origins=('mozilla.org',))
+
+        foo.add_view('get', _stub,
+                     cors_origins=('notmyidea.org', 'lolnet.org'))
+
+        self.assertIn('mozilla.org', foo.cors_supported_origins)
+        self.assertIn('notmyidea.org', foo.cors_supported_origins)
+        self.assertIn('lolnet.org', foo.cors_supported_origins)
+
+    def test_per_method_supported_origins(self):
+        foo = Service(
+            name='foo', path='/foo', cors_origins=('mozilla.org',))
+        foo.add_view('get', _stub, cors_origins=('lolnet.org',))
+
+        self.assertTrue('mozilla.org' in foo.cors_origins_for('get'))
+        self.assertTrue('lolnet.org' in foo.cors_origins_for('get'))
+
+        foo.add_view('post', _stub)
+        self.assertFalse('lolnet.org' in foo.cors_origins_for('post'))

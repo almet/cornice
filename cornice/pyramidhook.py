@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 import json
+import fnmatch
 import functools
 
 from pyramid.httpexceptions import HTTPMethodNotAllowed, HTTPNotAcceptable
@@ -52,7 +53,7 @@ def get_fallback_view(service):
                 continue
             if 'accept' in args:
                 acceptable.extend(
-                        service.get_acceptable(method, filter_callables=True))
+                    service.get_acceptable(method, filter_callables=True))
                 if 'acceptable' in request.info:
                     for content_type in request.info['acceptable']:
                         if content_type not in acceptable:
@@ -69,6 +70,57 @@ def get_fallback_view(service):
         # let upstream deal with the mismatch.
         raise PredicateMismatch(service.name)
     return _fallback_view
+
+
+def get_options_view(service):
+    """Return a view for the OPTION method.
+
+    Checks that the User-Agent is authorized to do a request to the server, and
+    to this particular service.
+    """
+
+    def _options_view(request):
+        origin = request.headers.get('Origin')
+        if not origin:
+            request.errors.add('headers', 'Origin',
+                               'this header is mandatory')
+
+        requested_method = request.headers.get('Access-Control-Request-Method')
+        if not requested_method:
+            request.errors.add('headers', 'Access-Control-Request-Method',
+                               'this header is mandatory')
+
+        if not (requested_method and origin):
+            return
+
+        requested_headers = (
+            request.headers.get('Access-Control-Request-Headers', ()))
+
+        if requested_headers:
+            requested_headers = requested_headers.split()
+
+        if not any([fnmatch.fnmatch(origin, o)
+                    for o in service.cors_supported_origins]):
+            request.errors.add('headers', 'Origin', '%s not allowed' % origin)
+        else:
+            request.response.headers['Access-Control-Allow-Origin'] = origin
+
+        if requested_method not in service.cors_supported_methods:
+            request.errors.add('headers', 'Access-Control-Request-Method',
+                               'Method not allowed')
+
+        supported_headers = service.cors_supported_headers
+        for h in requested_headers:
+            if not h in supported_headers:
+                request.errors.add('headers', 'Access-Control-Request-Headers',
+                                   'Header "%s" not allowed' % h)
+
+        request.response.headers['Access-Control-Allow-Methods'] = (
+            ",".join(service.cors_supported_methods))
+        request.response.headers['Access-Control-Allow-Headers'] = (
+            ",".join(service.cors_supported_headers))
+        return "ok"
+    return _options_view
 
 
 def tween_factory(handler, registry):
@@ -117,6 +169,11 @@ def register_service_views(config, service):
     # keep track of the registered routes
     registered_routes = []
 
+    # before doing anything else, register a view for the OPTIONS method
+    # if we need to
+    if service.cors_support and 'OPTIONS' not in service.defined_methods:
+        service.add_view('options', view=get_options_view(service))
+
     # register the fallback view, which takes care of returning good error
     # messages to the user-agent
     for method, view, args in service.definitions:
@@ -126,7 +183,8 @@ def register_service_views(config, service):
 
         decorated_view = decorate_view(view, dict(args), method)
         for item in ('filters', 'validators', 'schema', 'klass',
-                     'error_handler'):
+                     'error_handler', 'cors_headers', 'cors_support',
+                     'cors_origins', 'cors_allow_credentials'):
             if item in args:
                 del args[item]
 

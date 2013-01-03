@@ -46,43 +46,66 @@ class Service(object):
     All the class attributes defined in this class or in childs are considered
     default values.
 
-    :param name: the name of the service. Should be unique among all the
-                 services.
+    :param name:
+        The name of the service. Should be unique among all the services.
 
-    :param path: the path the service is available at. Should also be unique.
+    :param path:
+        The path the service is available at. Should also be unique.
 
-    :param renderer: the renderer that should be used by this service. Default
-                     value is 'simplejson'.
+    :param renderer:
+        The renderer that should be used by this service. Default value is
+        'simplejson'.
 
-    :param description: the description of what the webservice does. This is
-                        primarily intended for documentation purposes.
+    :param description:
+        The description of what the webservice does. This is primarily intended
+        for documentation purposes.
 
-    :param validators: a list of callables to pass the request into before
-                       passing it to the associated view.
+    :param validators:
+        A list of callables to pass the request into before passing it to the
+        associated view.
 
-    :param filters: a list of callables to pass the response into before
-                    returning it to the client.
+    :param filters:
+        A list of callables to pass the response into before returning it to
+        the client.
 
-    :param accept: a list of headers accepted for this service (or method if
-                   overwritten when defining a method). It can also be a
-                   callable, in which case the content-type will be discovered
-                   at runtime. If a callable is passed, it should be able to
-                   take the request as a first argument.
+    :param accept:
+        A list of headers accepted for this service (or method if overwritten
+        when defining a method). It can also be a callable, in which case the
+        content-type will be discovered at runtime. If a callable is passed, it
+        should be able to take the request as a first argument.
 
-    :param factory: A factory returning callables which return boolean values.
-                    The callables take the request as their first argument and
-                    return boolean values.
-                    This param is exclusive with the 'acl' one.
+    :param factory:
+        A factory returning callables which return boolean values.  The
+        callables take the request as their first argument and return boolean
+        values.  This param is exclusive with the 'acl' one.
 
-    :param acl: a callable defininng the ACL (returns true or false, function
-                of the given request). Exclusive with the 'factory' option.
+    :param acl:
+        A callable defininng the ACL (returns true or false, function of the
+        given request). Exclusive with the 'factory' option.
 
-    :param klass: the class to use when resolving views (if they are not
-                  callables)
+    :param klass:
+        The class to use when resolving views (if they are not callables)
 
-    :param error_handler: (optional) A callable which is used to render
-                  responses following validation failures.  Defaults to
-                  'json_renderer'.
+    :param error_handler:
+        A callable which is used to render responses following validation
+        failures.  Defaults to 'json_renderer'.
+
+    There is also a number of parameters that are related to the support of
+    CORS (Cross Origin Resource Sharing). You can read the CORS specification
+    at http://www.w3.org/TR/cors/
+
+    :param cors_support:
+        To use if you especially want to disable CORS support for a particular
+        service / method.
+
+    :param cors_origins:
+        The list of origins for CORS.
+
+    :param cors_headers:
+        The list of headers supported for the services
+
+    :param cors_allow_credentials:
+        Should the client send credential information (False by default)
 
     See
     http://readthedocs.org/docs/pyramid/en/1.0-branch/glossary.html#term-acl
@@ -97,7 +120,7 @@ class Service(object):
     default_filters = DEFAULT_FILTERS
 
     mandatory_arguments = ('renderer',)
-    list_arguments = ('validators', 'filters')
+    list_arguments = ('validators', 'filters', 'cors_headers', 'cors_origins')
 
     def __repr__(self):
         return u'<Service %s at %s>' % (self.name, self.path)
@@ -107,13 +130,14 @@ class Service(object):
         self.path = path
         self.description = description
         self._schemas = {}
+        self._cors_support = False
 
-        for key in ('validators', 'filters'):
+        for key in self.list_arguments:
             # default_{validators,filters} and {filters,validators} doesn't
             # have to be mutables, so we need to create a new list from them
             extra = to_list(kw.get(key, []))
             kw[key] = []
-            kw[key].extend(getattr(self, 'default_%s' % key))
+            kw[key].extend(getattr(self, 'default_%s' % key, []))
             kw[key].extend(extra)
 
         self.arguments = self.get_arguments(kw)
@@ -221,6 +245,7 @@ class Service(object):
         if hasattr(self, 'get_view_wrapper'):
             view = self.get_view_wrapper(kwargs)(view)
         self.definitions.append((method, view, args))
+
         # keep track of the defined methods for the service
         if method not in self.defined_methods:
             self.defined_methods.append(method)
@@ -298,6 +323,54 @@ class Service(object):
               "instead."
         warnings.warn(msg, DeprecationWarning)
         return self._schemas
+
+    @property
+    def cors_support(self):
+        return bool(self._cors_support or self.cors_origins)
+
+    @cors_support.setter
+    def cors_support(self, value):
+        self._cors_support = value
+
+    @property
+    def cors_supported_headers(self):
+        """Return an iterable of supported headers for this service.
+
+        The supported headers are defined by the :param headers: argument
+        that is passed to services or methods, at definition time.
+        """
+        headers = set()
+        for _, _, args in self.definitions:
+            if args.get('cors_support', True):
+                headers |= set(args.get('cors_headers', ()))
+        return headers
+
+    @property
+    def cors_supported_methods(self):
+        """Return an iterable of methods supported by CORS"""
+        methods = []
+        for meth, _, args in self.definitions:
+            if args.get('cors_support', True) and meth not in methods:
+                methods.append(meth)
+        return methods
+
+    @property
+    def cors_supported_origins(self):
+        origins = set(getattr(self, 'cors_origins', ()))
+        for _, _, args in self.definitions:
+            origins |= set(args.get('cors_origins', ()))
+        return origins
+
+    def cors_origins_for(self, method):
+        """Return the list of origins supported for a given HTTP method"""
+        origins = set()
+        for meth, view, args in self.definitions:
+            if meth.upper() == method.upper():
+                origins |= set(args.get('cors_origins', ()))
+
+        if not origins:
+            origins = self.cors_origins
+        return origins
 
 
 def decorate_view(view, args, method):
