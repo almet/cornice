@@ -94,18 +94,23 @@ class Service(object):
     CORS (Cross Origin Resource Sharing). You can read the CORS specification
     at http://www.w3.org/TR/cors/
 
-    :param cors_support:
+    :param cors_enabled:
         To use if you especially want to disable CORS support for a particular
         service / method.
 
     :param cors_origins:
-        The list of origins for CORS.
+        The list of origins for CORS. You can use wildcards here if needed,
+        e.g. ('list', 'of', '*.domain').
 
     :param cors_headers:
-        The list of headers supported for the services
+        The list of headers supported for the services.
 
-    :param cors_allow_credentials:
-        Should the client send credential information (False by default)
+    :param cors_credentials:
+        Should the client send credential information (False by default).
+
+    :param cors_max_age:
+         Indicates how long the results of a preflight request can be cached in
+         a preflight result cache.
 
     See
     http://readthedocs.org/docs/pyramid/en/1.0-branch/glossary.html#term-acl
@@ -130,7 +135,7 @@ class Service(object):
         self.path = path
         self.description = description
         self._schemas = {}
-        self._cors_support = False
+        self._cors_enabled = None
 
         for key in self.list_arguments:
             # default_{validators,filters} and {filters,validators} doesn't
@@ -325,12 +330,15 @@ class Service(object):
         return self._schemas
 
     @property
-    def cors_support(self):
-        return bool(self._cors_support or self.cors_origins)
+    def cors_enabled(self):
+        if self._cors_enabled is False:
+            return False
 
-    @cors_support.setter
-    def cors_support(self, value):
-        self._cors_support = value
+        return bool(self.cors_origins or self._cors_enabled)
+
+    @cors_enabled.setter
+    def cors_enabled(self, value):
+        self._cors_enabled = value
 
     @property
     def cors_supported_headers(self):
@@ -341,7 +349,7 @@ class Service(object):
         """
         headers = set()
         for _, _, args in self.definitions:
-            if args.get('cors_support', True):
+            if args.get('cors_enabled', True):
                 headers |= set(args.get('cors_headers', ()))
         return headers
 
@@ -350,7 +358,7 @@ class Service(object):
         """Return an iterable of methods supported by CORS"""
         methods = []
         for meth, _, args in self.definitions:
-            if args.get('cors_support', True) and meth not in methods:
+            if args.get('cors_enabled', True) and meth not in methods:
                 methods.append(meth)
         return methods
 
@@ -371,6 +379,27 @@ class Service(object):
         if not origins:
             origins = self.cors_origins
         return origins
+
+    def cors_support_credentials(self, method=None):
+        """Returns if the given method support credentials.
+
+        :param method:
+            The method to check the credentials support for
+        """
+        for meth, view, args in self.definitions:
+            if meth.upper() == method.upper():
+                return args.get('cors_credentials', False)
+
+        if getattr(self, 'cors_credentials', False):
+            return self.cors_credentials
+        return False
+
+    def cors_max_age_for(self, method=None):
+        for meth, view, args in self.definitions:
+            if meth.upper() == method.upper():
+                return args.get('cors_max_age', False)
+
+        return getattr(self, 'cors_max_age')
 
 
 def decorate_view(view, args, method):

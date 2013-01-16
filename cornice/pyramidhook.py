@@ -2,8 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 import json
-import fnmatch
 import functools
+import copy
 
 from pyramid.httpexceptions import HTTPMethodNotAllowed, HTTPNotAcceptable
 from pyramid.exceptions import PredicateMismatch
@@ -11,6 +11,8 @@ from pyramid.exceptions import PredicateMismatch
 from cornice.service import decorate_view
 from cornice.errors import Errors
 from cornice.util import to_list
+from cornice.cors import (get_cors_filter, get_cors_validator,
+                          get_cors_preflight_view, CORS_PARAMETERS)
 
 
 def match_accept_header(func, context, request):
@@ -72,57 +74,6 @@ def get_fallback_view(service):
     return _fallback_view
 
 
-def get_options_view(service):
-    """Return a view for the OPTION method.
-
-    Checks that the User-Agent is authorized to do a request to the server, and
-    to this particular service.
-    """
-
-    def _options_view(request):
-        origin = request.headers.get('Origin')
-        if not origin:
-            request.errors.add('headers', 'Origin',
-                               'this header is mandatory')
-
-        requested_method = request.headers.get('Access-Control-Request-Method')
-        if not requested_method:
-            request.errors.add('headers', 'Access-Control-Request-Method',
-                               'this header is mandatory')
-
-        if not (requested_method and origin):
-            return
-
-        requested_headers = (
-            request.headers.get('Access-Control-Request-Headers', ()))
-
-        if requested_headers:
-            requested_headers = requested_headers.split()
-
-        if not any([fnmatch.fnmatch(origin, o)
-                    for o in service.cors_supported_origins]):
-            request.errors.add('headers', 'Origin', '%s not allowed' % origin)
-        else:
-            request.response.headers['Access-Control-Allow-Origin'] = origin
-
-        if requested_method not in service.cors_supported_methods:
-            request.errors.add('headers', 'Access-Control-Request-Method',
-                               'Method not allowed')
-
-        supported_headers = service.cors_supported_headers
-        for h in requested_headers:
-            if not h in supported_headers:
-                request.errors.add('headers', 'Access-Control-Request-Headers',
-                                   'Header "%s" not allowed' % h)
-
-        request.response.headers['Access-Control-Allow-Methods'] = (
-            ",".join(service.cors_supported_methods))
-        request.response.headers['Access-Control-Allow-Headers'] = (
-            ",".join(service.cors_supported_headers))
-        return "ok"
-    return _options_view
-
-
 def tween_factory(handler, registry):
     """Wraps the default WSGI workflow to provide cornice utilities"""
     def cornice_tween(request):
@@ -137,7 +88,10 @@ def tween_factory(handler, registry):
                 for _filter in kwargs.get('filters', []):
                     if isinstance(_filter, basestring) and ob is not None:
                         _filter = getattr(ob, _filter)
-                    response = _filter(response)
+                    try:
+                        response = _filter(response, request)
+                    except TypeError:
+                        response = _filter(response)
         return response
     return cornice_tween
 
@@ -171,20 +125,27 @@ def register_service_views(config, service):
 
     # before doing anything else, register a view for the OPTIONS method
     # if we need to
-    if service.cors_support and 'OPTIONS' not in service.defined_methods:
-        service.add_view('options', view=get_options_view(service))
+    if service.cors_enabled and 'OPTIONS' not in service.defined_methods:
+        service.add_view('options', view=get_cors_preflight_view(service))
 
     # register the fallback view, which takes care of returning good error
     # messages to the user-agent
+    cors_validator = get_cors_validator(service)
+    cors_filter = get_cors_filter(service)
+
     for method, view, args in service.definitions:
 
-        args = dict(args)  # make a copy of the dict to not modify it
+        args = copy.deepcopy(args)  # make a copy of the dict to not modify it
         args['request_method'] = method
 
+        if service.cors_enabled:
+            args['validators'].insert(0, cors_validator)
+            args['filters'].append(cors_filter)
+
         decorated_view = decorate_view(view, dict(args), method)
+
         for item in ('filters', 'validators', 'schema', 'klass',
-                     'error_handler', 'cors_headers', 'cors_support',
-                     'cors_origins', 'cors_allow_credentials'):
+                     'error_handler') + CORS_PARAMETERS:
             if item in args:
                 del args[item]
 
